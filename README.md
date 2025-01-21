@@ -1,5 +1,4 @@
 [![progress-banner](https://backend.codecrafters.io/progress/dns-server/3c0bd45d-461b-4dbf-84b9-f0d99898c440)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
-<<<<<<< HEAD
 
 This is a starting point for C++ solutions to the
 ["Build Your Own DNS server" Challenge](https://app.codecrafters.io/courses/dns-server/overview).
@@ -35,5 +34,3 @@ Note: This section is for stages 2 and beyond.
    `src/server.cpp`.
 1. Commit your changes and run `git push origin master` to submit your solution
    to CodeCrafters. Test output will be streamed to your terminal.
-=======
->>>>>>> 4258acd986881eb248e5f4934c7dfc3c7f8c590c
