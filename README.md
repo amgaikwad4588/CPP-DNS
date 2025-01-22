@@ -1,4 +1,4 @@
-[![progress-banner](https://backend.codecrafters.io/progress/dns-server/3c0bd45d-461b-4dbf-84b9-f0d99898c440)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+[![progress-banner](https://backend.codecrafters.io/progress/dns-server/82f2397b-7f5b-458e-9db6-ed6537f0368d)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
 This is a starting point for C++ solutions to the
 ["Build Your Own DNS server" Challenge](https://app.codecrafters.io/courses/dns-server/overview).
