@@ -3,103 +3,86 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <string>
 #include <vector>
 #include <algorithm>
 
-// Define the DNS Message Header
+// DNS Header structure
 struct DNS_Header {
-    uint16_t ID;     // Identification
-    uint16_t FLAGS;  // Flags
-    uint16_t QDCOUNT; // Number of questions
-    uint16_t ANCOUNT; // Number of answers
-    uint16_t NSCOUNT; // Number of authority records
-    uint16_t ARCOUNT; // Number of additional records
+    uint16_t ID;
+    uint16_t FLAGS;
+    uint16_t QDCOUNT;
+    uint16_t ANCOUNT;
+    uint16_t NSCOUNT;
+    uint16_t ARCOUNT;
 };
 
-// Define the DNS Question Section
-struct DNS_Question {
-    std::vector<uint8_t> NAME; // Domain name encoded as labels
-    uint16_t TYPE;            // Query type
-    uint16_t CLASS;           // Query class
-};
-
-// Define the DNS Message Structure
-struct DNS_Message {
-    DNS_Header header;
-    DNS_Question question;
-
-    void to_network_order() {
-        header.ID = htons(header.ID);
-        header.FLAGS = htons(header.FLAGS);
-        header.QDCOUNT = htons(header.QDCOUNT);
-        header.ANCOUNT = htons(header.ANCOUNT);
-        header.NSCOUNT = htons(header.NSCOUNT);
-        header.ARCOUNT = htons(header.ARCOUNT);
-        question.TYPE = htons(question.TYPE);
-        question.CLASS = htons(question.CLASS);
-    }
-};
-
-// Create the DNS response with the question section
-void create_response(DNS_Message &dns_message) {
-    // Fill the header section
-    dns_message.header.ID = 1234;
-    dns_message.header.FLAGS = (1 << 15); // Set response flag
-    dns_message.header.QDCOUNT = 1;      // One question
-    dns_message.header.ANCOUNT = 0;      // No answer records
-    dns_message.header.NSCOUNT = 0;      // No authority records
-    dns_message.header.ARCOUNT = 0;      // No additional records
-
-    // Encode the domain name (codecrafters.io)
-    std::string first_label = "codecrafters";
-    std::string second_label = "io";
-
-    dns_message.question.NAME.push_back((uint8_t)first_label.size());
-    for (char c : first_label)
-        dns_message.question.NAME.push_back(c);
-
-    dns_message.question.NAME.push_back((uint8_t)second_label.size());
-    for (char c : second_label)
-        dns_message.question.NAME.push_back(c);
-
-    dns_message.question.NAME.push_back(0); // Null byte terminator
-
-    // Fill the TYPE and CLASS fields
-    dns_message.question.TYPE = 1;  // A record
-    dns_message.question.CLASS = 1; // IN class
-
-    // Convert fields to network byte order
-    dns_message.to_network_order();
+// Helper to convert 16-bit and 32-bit integers to network byte order
+inline uint16_t to_network_order_16(uint16_t value) {
+    return htons(value);
 }
 
+inline uint32_t to_network_order_32(uint32_t value) {
+    return htonl(value);
+}
+
+// Helper to parse domain names
+std::string parse_domain_name(const uint8_t* data, size_t& offset) {
+    std::string domain_name;
+    while (data[offset] != 0) {
+        uint8_t label_length = data[offset++];
+        for (int i = 0; i < label_length; ++i) {
+            domain_name += static_cast<char>(data[offset++]);
+        }
+        domain_name += '.';
+    }
+    ++offset; // Skip the null byte
+    if (!domain_name.empty()) {
+        domain_name.pop_back(); // Remove trailing dot
+    }
+    return domain_name;
+}
+
+// Helper to encode domain names as label sequences
+std::vector<uint8_t> encode_domain_name(const std::string& domain) {
+    std::vector<uint8_t> encoded_name;
+    size_t start = 0, end = 0;
+
+    while ((end = domain.find('.', start)) != std::string::npos) {
+        encoded_name.push_back(end - start); // Length of the label
+        for (size_t i = start; i < end; ++i) {
+            encoded_name.push_back(domain[i]);
+        }
+        start = end + 1;
+    }
+    // Add the last label
+    encoded_name.push_back(domain.size() - start);
+    for (size_t i = start; i < domain.size(); ++i) {
+        encoded_name.push_back(domain[i]);
+    }
+    encoded_name.push_back(0); // Null byte to terminate the domain
+    return encoded_name;
+}
+
+// DNS Server
 int main() {
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
-    setbuf(stdout, NULL);
 
     int udpSocket;
     struct sockaddr_in clientAddress;
-
     udpSocket = socket(AF_INET, SOCK_DGRAM, 0);
     if (udpSocket == -1) {
-        std::cerr << "Socket creation failed: " << strerror(errno) << "..." << std::endl;
+        std::cerr << "Socket creation failed: " << strerror(errno) << std::endl;
         return 1;
     }
 
-    int reuse = 1;
-    if (setsockopt(udpSocket, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
-        std::cerr << "SO_REUSEPORT failed: " << strerror(errno) << std::endl;
-        return 1;
-    }
-
-    sockaddr_in serv_addr = {
+    sockaddr_in serverAddress = {
         .sin_family = AF_INET,
         .sin_port = htons(2053),
         .sin_addr = {htonl(INADDR_ANY)},
     };
 
-    if (bind(udpSocket, reinterpret_cast<struct sockaddr *>(&serv_addr), sizeof(serv_addr)) != 0) {
+    if (bind(udpSocket, reinterpret_cast<struct sockaddr*>(&serverAddress), sizeof(serverAddress)) != 0) {
         std::cerr << "Bind failed: " << strerror(errno) << std::endl;
         return 1;
     }
@@ -108,38 +91,70 @@ int main() {
     socklen_t clientAddrLen = sizeof(clientAddress);
 
     while (true) {
-        int bytesRead = recvfrom(udpSocket, buffer, sizeof(buffer), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), &clientAddrLen);
+        int bytesRead = recvfrom(udpSocket, buffer, sizeof(buffer), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), &clientAddrLen);
         if (bytesRead == -1) {
             perror("Error receiving data");
             break;
         }
 
-        buffer[bytesRead] = '\0';
-        std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
+        size_t offset = 0;
 
-        // Create the response
-        DNS_Message response;
-        create_response(response);
+        // Parse the header
+        DNS_Header* header = reinterpret_cast<DNS_Header*>(buffer);
+        header->ID = ntohs(header->ID);
+        header->QDCOUNT = ntohs(header->QDCOUNT);
 
-        // Serialize the response
-        std::vector<uint8_t> responseBuffer;
+        // Parse the question
+        offset = sizeof(DNS_Header);
+        std::string domain_name = parse_domain_name(reinterpret_cast<uint8_t*>(buffer), offset);
+
+        uint16_t qtype = ntohs(*reinterpret_cast<uint16_t*>(&buffer[offset]));
+        offset += 2;
+        uint16_t qclass = ntohs(*reinterpret_cast<uint16_t*>(&buffer[offset]));
+        offset += 2;
+
+        std::cout << "Received query for: " << domain_name << ", Type: " << qtype << ", Class: " << qclass << std::endl;
+
+        // Prepare the response
+        std::vector<uint8_t> response;
 
         // Header
-        responseBuffer.insert(responseBuffer.end(), (uint8_t *)&response.header, (uint8_t *)&response.header + sizeof(response.header));
+        DNS_Header response_header = *header;
+        response_header.FLAGS = to_network_order_16(0x8180); // Standard query response, no error
+        response_header.QDCOUNT = to_network_order_16(1); // 1 question
+        response_header.ANCOUNT = to_network_order_16(1); // 1 answer
+        response_header.NSCOUNT = 0;
+        response_header.ARCOUNT = 0;
 
-        // Question NAME
-        responseBuffer.insert(responseBuffer.end(), response.question.NAME.begin(), response.question.NAME.end());
+        response.insert(response.end(), reinterpret_cast<uint8_t*>(&response_header), reinterpret_cast<uint8_t*>(&response_header) + sizeof(response_header));
 
-        // Question TYPE
-        responseBuffer.push_back((response.question.TYPE >> 8) & 0xFF);
-        responseBuffer.push_back(response.question.TYPE & 0xFF);
+        // Question
+        auto encoded_name = encode_domain_name(domain_name);
+        response.insert(response.end(), encoded_name.begin(), encoded_name.end());
+        response.push_back(0x00); // Type: A
+        response.push_back(0x01);
+        response.push_back(0x00); // Class: IN
+        response.push_back(0x01);
 
-        // Question CLASS
-        responseBuffer.push_back((response.question.CLASS >> 8) & 0xFF);
-        responseBuffer.push_back(response.question.CLASS & 0xFF);
+        // Answer
+        response.insert(response.end(), encoded_name.begin(), encoded_name.end());
+        response.push_back(0x00); // Type: A
+        response.push_back(0x01);
+        response.push_back(0x00); // Class: IN
+        response.push_back(0x01);
+        response.push_back(0x00); // TTL: 60
+        response.push_back(0x00);
+        response.push_back(0x00);
+        response.push_back(0x3C);
+        response.push_back(0x00); // Data length: 4
+        response.push_back(0x04);
+        response.push_back(0x08); // Data: 8.8.8.8
+        response.push_back(0x08);
+        response.push_back(0x08);
+        response.push_back(0x08);
 
         // Send the response
-        if (sendto(udpSocket, responseBuffer.data(), responseBuffer.size(), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), sizeof(clientAddress)) == -1) {
+        if (sendto(udpSocket, response.data(), response.size(), 0, reinterpret_cast<struct sockaddr*>(&clientAddress), clientAddrLen) == -1) {
             perror("Failed to send response");
         }
     }
