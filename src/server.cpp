@@ -3,37 +3,173 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <string>
-#include "dns_message.hpp"
-enum FLAGS
+#include <bitset>
+#include <vector>
+struct dns_header
 {
-    RESPONSE_FLAG = (1 << 15),
+    int16_t ID;
+    int16_t FLAGS;
+    int16_t QDCOUNT;
+    int16_t ANCOUNT;
+    int16_t NSCOUNT;
+    int16_t ARCOUNT;
+    ssize_t Parse(const char *buffer, ssize_t length)
+    {
+        if (length < 12)
+        {
+            return 0;
+        }
+        ID = ntohs(*reinterpret_cast<const uint16_t *>(&buffer[0]));
+        FLAGS = ntohs(*reinterpret_cast<const uint16_t *>(&buffer[2]));
+        QDCOUNT = ntohs(*reinterpret_cast<const uint16_t *>(&buffer[4]));
+        ANCOUNT = ntohs(*reinterpret_cast<const uint16_t *>(&buffer[6]));
+        NSCOUNT = ntohs(*reinterpret_cast<const uint16_t *>(&buffer[8]));
+        ARCOUNT = ntohs(*reinterpret_cast<const uint16_t *>(&buffer[10]));
+        return 12;
+    }
+    std::string ToBuffer() const
+    {
+        std::string buffer;
+        buffer.reserve(12);
+        int16_t hostnumber = htons(ID);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber = htons(FLAGS);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber = htons(QDCOUNT);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber = htons(ANCOUNT);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber = htons(NSCOUNT);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber = htons(ARCOUNT);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        return buffer;
+    }
 };
-void create_response(DNS_Message &dns_message)
+struct dns_query
 {
-    dns_message.header.ID = 1234;
-    dns_message.header.FLAGS = RESPONSE_FLAG;
-    dns_message.header.QDCOUNT = 1;
-    dns_message.header.ANCOUNT = 0;
-    dns_message.header.NSCOUNT = 0;
-    dns_message.header.ARCOUNT = 0;
-    std::string first_domain = "codecrafters";
-    dns_message.question.NAME.push_back((uint8_t)first_domain.size());
-    for (char c : first_domain)
+    std::vector<std::string> names;
+    int16_t qtype;
+    int16_t qclass;
+    ssize_t Parse(const char *buffer, ssize_t length)
     {
-        dns_message.question.NAME.push_back(c);
+        if (length < 12)
+        {
+            return 0;
+        }
+        int i = 12;
+        for (; i < length; ++i)
+        {
+            if (buffer[i] == 0)
+            {
+                break;
+            }
+            int name_length = buffer[i];
+            std::string name(&buffer[i + 1], name_length);
+            names.push_back(name);
+            i += name_length;
+        }
+        qtype = ntohs(*reinterpret_cast<const int16_t *>(&buffer[i + 1]));
+        qclass = ntohs(*reinterpret_cast<const int16_t *>(&buffer[i + 3]));
+        return 12;
     }
-    std::string second_domain = "io";
-    dns_message.question.NAME.push_back((uint8_t)second_domain.size());
-    for (char c : second_domain)
+    std::string ToBuffer() const
     {
-        dns_message.question.NAME.push_back(c);
+        std::string buffer;
+        for (auto name : names)
+        {
+            buffer.append(std::string(1, name.size()));
+            buffer.append(name);
+        }
+        buffer.append(std::string(1, 0));
+        int16_t hostnumber = htons(qtype);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber = htons(qclass);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        return buffer;
     }
-    dns_message.question.NAME.push_back(0);
-
-    dns_message.question.CLASS = 1;
-    dns_message.question.TYPE = 1;
-    dns_message.to_network_order();
+};
+struct dns_answer
+{
+    std::vector<std::string> names;
+    int16_t atype;
+    int16_t aclass;
+    int32_t TTL;
+    int16_t length;
+    int32_t data;
+    std::string ToBuffer() const
+    {
+        std::string buffer;
+        for (auto name : names)
+        {
+            buffer.append(std::string(1, name.size()));
+            buffer.append(name);
+        }
+        buffer.append(std::string(1, 0));
+        int16_t hostnumber = htons(atype);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber = htons(aclass);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        int32_t hostnumber2 = htonl(TTL);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber2), 4);
+        hostnumber = htons(length);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber), 2);
+        hostnumber2 = htonl(data);
+        buffer.append(reinterpret_cast<const char *>(&hostnumber2), 4);
+        return buffer;
+    }
+};
+class DNSMessage
+{
+public:
+    DNSMessage(const char *buffer, ssize_t length)
+    {
+        auto result = header.Parse(buffer, length);
+        if (result == 0)
+        {
+            error = true;
+            return;
+        }
+        result = query.Parse(buffer, length);
+        if (result == 0)
+        {
+            error = true;
+            return;
+        }
+    }
+    std::string ToBuffer()
+    {
+        header.FLAGS |= (1 << 15);
+        header.QDCOUNT = 1;
+        header.ANCOUNT = 1;
+        query.qtype = 1;
+        query.qclass = 1;
+        answer.names = query.names;
+        answer.atype = 1;
+        answer.aclass = 1;
+        answer.TTL = 60;
+        answer.length = 4;
+        answer.data = 0x08080808;
+        std::string buffer;
+        buffer.append(header.ToBuffer());
+        buffer.append(query.ToBuffer());
+        buffer.append(answer.ToBuffer());
+        return buffer;
+    }
+private:
+    dns_header header;
+    dns_query query;
+    dns_answer answer;
+    bool error;
+};
+void system_info()
+{
+    unsigned int i = 1;
+    char *c = (char *)&i;
+    if (*c)
+        printf("Little endian\n");
+    else
+        printf("Big endian\n");
 }
 int main()
 {
@@ -42,6 +178,10 @@ int main()
     std::cerr << std::unitbuf;
     // Disable output buffering
     setbuf(stdout, NULL);
+    system_info();
+    // You can use print statements as follows for debugging, they'll be visible when running tests.
+    std::cout << "Logs from your program will appear here!" << std::endl;
+    // Uncomment this block to pass the first stage
     int udpSocket;
     struct sockaddr_in clientAddress;
     udpSocket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -50,7 +190,8 @@ int main()
         std::cerr << "Socket creation failed: " << strerror(errno) << "..." << std::endl;
         return 1;
     }
-    // Ensures that 'Address already in use' errors are not encountered during testing
+    // Since the tester restarts your program quite often, setting REUSE_PORT
+    // ensures that we don't run into 'Address already in use' errors
     int reuse = 1;
     if (setsockopt(udpSocket, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0)
     {
@@ -81,20 +222,11 @@ int main()
         }
         buffer[bytesRead] = '\0';
         std::cout << "Received " << bytesRead << " bytes: " << buffer << std::endl;
-        // Create the response
-        DNS_Message response;
-        create_response(response);
-
-        char responseBuffer[sizeof(response.header) + response.question.NAME.size() + 4];
-        std::copy((const char *)&response.header, (const char *)&response.header + sizeof(response.header), responseBuffer);
-        std::copy(response.question.NAME.begin(), response.question.NAME.end(), responseBuffer + sizeof(response.header));
-        responseBuffer[sizeof(response.header) + response.question.NAME.size()] = 0;
-        responseBuffer[sizeof(response.header) + response.question.NAME.size() + 1] = 1;
-        responseBuffer[sizeof(response.header) + response.question.NAME.size() + 2] = 0;
-        responseBuffer[sizeof(response.header) + response.question.NAME.size() + 3] = 1;
-
-        // Send response
-        if (sendto(udpSocket, &responseBuffer, sizeof(responseBuffer), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), sizeof(clientAddress)) == -1)
+        DNSMessage message(buffer, bytesRead);
+        auto response = message.ToBuffer();
+        std::cout << "Response size: " << response.size() << std::endl;
+        std::cout << "Response size: " << response.size() << std::endl;
+        if (sendto(udpSocket, response.c_str(), response.size(), 0, reinterpret_cast<struct sockaddr *>(&clientAddress), sizeof(clientAddress)) == -1)
         {
             perror("Failed to send response");
         }
